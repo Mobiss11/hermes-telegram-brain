@@ -111,7 +111,8 @@ curl -s -X PATCH -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: applica
 
 ### Картинки не распознаются
 
-Не задан `OPENROUTER_API_KEY`, либо OpenRouter недоступен из вашей сети. Проверьте:
+Распознавание ходит на внешнюю vision-модель (по умолчанию OpenRouter). Не задан `OPENROUTER_API_KEY`,
+либо OpenRouter недоступен из вашей сети — тогда картинки и сканы не распознаются (всё остальное работает). Проверьте:
 
 ```bash
 curl -s -m 8 -o /dev/null -w "%{http_code}\n" https://openrouter.ai/api/v1/models
