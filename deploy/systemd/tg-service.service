@@ -1,0 +1,37 @@
+# Автозапуск tg-service на Linux без Docker.
+# Если используете docker compose, эти юниты не нужны: там перезапуск уже настроен.
+#
+# Замените __USER__ и __PROJECT_DIR__ на свои значения, затем:
+#   sudo cp deploy/systemd/*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tg-service tg-media-worker
+#
+# Логи:      journalctl -u tg-service -f
+# Рестарт:   sudo systemctl restart tg-service
+#
+# Флаг --no-sync обязателен: без него сервис и медиа-воркер будут
+# пересобирать виртуальное окружение друг у друга.
+
+[Unit]
+Description=tg-service: Telegram userbot, API and outbox
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/__USER__/.local/bin/uv run --directory __PROJECT_DIR__ --no-sync tg-service
+Restart=always
+RestartSec=10
+
+# Базовое ограничение прав: сервису нужна только своя папка
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__PROJECT_DIR__/data
+
+[Install]
+WantedBy=multi-user.target

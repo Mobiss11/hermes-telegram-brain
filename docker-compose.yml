@@ -1,0 +1,68 @@
+# tg-service
+#
+# Linux / VPS: docker compose up -d          — поднимает базу, сервис и медиа-воркер
+# macOS:       docker compose up -d db       — только база, сервис запускайте через uv
+#              (Whisper через mlx требует доступа к Metal, в контейнере на macOS его нет)
+#
+# Перед первым запуском обязательно: docker compose run --rm app tg-login
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tg
+      POSTGRES_PASSWORD: tg
+      POSTGRES_DB: tg
+    ports:
+      # Только localhost. Наружу базу не выставлять.
+      - "127.0.0.1:5436:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: postgres -c shared_buffers=512MB -c work_mem=32MB -c maintenance_work_mem=256MB
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tg"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Внутри compose база доступна по имени сервиса, а не через localhost
+      DATABASE_URL: postgresql://tg:tg@db:5432/tg
+      API_HOST: 0.0.0.0
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+      - hf-cache:/root/.cache/huggingface
+    ports:
+      # API слушает только localhost хоста. Это доступ ко всей переписке.
+      - "127.0.0.1:8077:8077"
+    command: tg-service
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://tg:tg@db:5432/tg
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+      - hf-cache:/root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8078:8078"
+    command: tg-media-worker
+
+volumes:
+  pgdata:
+  hf-cache:

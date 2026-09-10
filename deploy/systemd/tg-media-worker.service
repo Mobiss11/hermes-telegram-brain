@@ -1,0 +1,32 @@
+# Автозапуск медиа-воркера на Linux без Docker.
+# Расшифровка речи, распознавание картинок, разбор документов, эмбеддинги.
+#
+# Замените __USER__ и __PROJECT_DIR__, затем:
+#   sudo cp deploy/systemd/*.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tg-media-worker
+#
+# Логи: journalctl -u tg-media-worker -f
+
+[Unit]
+Description=tg-media-worker: speech to text, vision, documents, embeddings
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__PROJECT_DIR__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/__USER__/.local/bin/uv run --directory __PROJECT_DIR__ --no-sync --extra media tg-media-worker
+Restart=always
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__PROJECT_DIR__/data
+
+[Install]
+WantedBy=multi-user.target

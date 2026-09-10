@@ -1,0 +1,22 @@
+# Секреты и данные
+.env
+data/
+
+# Сессия Telegram: равна полному доступу к аккаунту
+*.session
+*.session-journal
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Модели и кэши
+.cache/
+
+# ОС и редакторы
+.DS_Store
+.idea/
+.vscode/

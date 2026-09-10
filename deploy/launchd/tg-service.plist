@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Автозапуск tg-service на macOS.
+
+  Замените плейсхолдеры на свои значения:
+    __UV__          полный путь к uv        (which uv, обычно /Users/ВЫ/.local/bin/uv)
+    __PROJECT_DIR__ папка проекта           (например /Users/ВЫ/tg-service)
+    __USER__        ваше имя пользователя   (whoami)
+
+  Установка:
+    cp deploy/launchd/tg-service.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/tg-service.plist
+
+  Перезапуск после обновления кода:
+    launchctl kickstart -k gui/$(id -u)/tg-service
+
+  Флаг --no-sync обязателен: без него сервис и медиа-воркер будут
+  пересобирать виртуальное окружение друг у друга и зависнут.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>tg-service</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__UV__</string>
+        <string>run</string>
+        <string>--directory</string>
+        <string>__PROJECT_DIR__</string>
+        <string>--no-sync</string>
+        <string>tg-service</string>
+    </array>
+    <key>WorkingDirectory</key><string>__PROJECT_DIR__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>/Users/__USER__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONUNBUFFERED</key><string>1</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>StandardOutPath</key><string>__PROJECT_DIR__/data/service.log</string>
+    <key>StandardErrorPath</key><string>__PROJECT_DIR__/data/service.log</string>
+</dict>
+</plist>
