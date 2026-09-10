@@ -86,7 +86,7 @@ Telegram шлёт код не в SMS, а в само приложение Telegr
 
 ## Медиа
 
-### Голосовые не расшифровываются
+### Голосовые и кружки не расшифровываются
 
 ```bash
 curl -s -H "Authorization: Bearer $API_TOKEN" "localhost:8077/media/jobs?status=failed"
