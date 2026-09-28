@@ -81,6 +81,12 @@ uv run tg-service
 Инструменты: `list_chats`, `get_messages`, `message_context`, `search_messages`, `semantic_search`,
 `fetch_media`, `draft_message`, `draft_edit`, `draft_delete`, `outbox_status` и другие.
 
+🧩 **Скилл для агента.** Инструменты без навигации — склад: агент видит `list_chats`, но не знает,
+что с ним делать. [**telegram-context**](https://github.com/Mobiss11/telegram-context) — скилл поверх
+этого MCP: тактика поиска по переписке, правила, безопасная работа с черновиками и резервный путь
+через HTTP API. Ставится в OpenCode / Claude Code / Cursor одной командой; там же — вариант запуска
+MCP **по ssh**, когда сервис живёт на другой машине.
+
 👉 **Claude Code, Cursor, Hermes:** [docs/MCP.md](docs/MCP.md)
 
 ---
