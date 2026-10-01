@@ -24,7 +24,19 @@ async def _init_conn(conn: asyncpg.Connection):
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        _pool = await asyncpg.create_pool(settings.database_url, init=_init_conn, min_size=2, max_size=10)
+        if settings.database_url:
+            _pool = await asyncpg.create_pool(settings.database_url, init=_init_conn, min_size=2, max_size=10)
+        else:
+            _pool = await asyncpg.create_pool(
+                host=settings.db_host,
+                port=settings.db_port,
+                database=settings.db_name,
+                user=settings.db_user,
+                password=settings.db_password,
+                init=_init_conn,
+                min_size=2,
+                max_size=10,
+            )
     return _pool
 
 

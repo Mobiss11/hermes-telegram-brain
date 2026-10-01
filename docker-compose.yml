@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: tg
-      POSTGRES_PASSWORD: tg
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: tg
     ports:
       # Только localhost. Наружу базу не выставлять.
@@ -34,8 +34,11 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      # Внутри compose база доступна по имени сервиса, а не через localhost
-      DATABASE_URL: postgresql://tg:tg@db:5432/tg
+      # Внутри compose база доступна по имени сервиса, а не через localhost.
+      # Password is passed as a separate value, so URI-reserved characters remain safe.
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       API_HOST: 0.0.0.0
       PYTHONUNBUFFERED: "1"
     volumes:
@@ -54,7 +57,9 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://tg:tg@db:5432/tg
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./data:/app/data

@@ -4,13 +4,17 @@ import logging
 from telethon import TelegramClient, events
 
 from .. import outbox, repo
+from ..config import settings
 from ..db import get_pool
 from .ingest import ingest_message
+from .mapper import chat_row
 
 log = logging.getLogger(__name__)
 
 
 async def _tracked(chat_id: int) -> bool:
+    if not settings.is_allowed_chat_id(chat_id):
+        return False
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await repo.is_tracked(conn, chat_id)
@@ -23,6 +27,8 @@ def register_handlers(client: TelegramClient, me_id: int | None = None):
             return
         try:
             chat = await event.get_chat()
+            if chat_row(chat)["type"] != "channel":
+                return
             sender = await event.get_sender()
             await ingest_message(event.message, chat=chat, sender=sender)
         except Exception:
@@ -39,13 +45,18 @@ def register_handlers(client: TelegramClient, me_id: int | None = None):
         if not await _tracked(event.chat_id):
             return
         try:
+            chat = await event.get_chat()
+            if chat_row(chat)["type"] != "channel":
+                return
             sender = await event.get_sender()
-            await ingest_message(event.message, sender=sender, bump_cursor=False, track_edit=True)
+            await ingest_message(event.message, chat=chat, sender=sender, bump_cursor=False, track_edit=True)
         except Exception:
             log.exception("failed to ingest edit %s/%s", event.chat_id, event.message.id)
 
     @client.on(events.MessageDeleted())
     async def on_delete(event: events.MessageDeleted.Event):
+        if not settings.is_allowed_chat_id(event.chat_id):
+            return
         pool = await get_pool()
         async with pool.acquire() as conn:
             n = await repo.mark_deleted(conn, list(event.deleted_ids), event.chat_id)
@@ -59,6 +70,8 @@ def register_handlers(client: TelegramClient, me_id: int | None = None):
             return
         try:
             chat = await event.get_chat()
+            if chat_row(chat)["type"] != "channel":
+                return
             await ingest_message(msg, chat=chat)
         except Exception:
             log.exception("failed to ingest service message %s/%s", event.chat_id, msg.id)

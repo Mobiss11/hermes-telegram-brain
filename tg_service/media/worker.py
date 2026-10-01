@@ -191,6 +191,9 @@ def create_worker_app() -> FastAPI:
 async def main():
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    if not settings.allowed_chat_ids:
+        log.error("TG_ALLOWED_CHAT_IDS is empty; refusing to start media processing")
+        return
     log.info("media worker started (whisper=%s, vision=%s, embed=%s)", settings.whisper_model, settings.vision_model,
              settings.embed_model if settings.embed_enabled else "off")
     server = uvicorn.Server(uvicorn.Config(create_worker_app(), host="127.0.0.1", port=settings.media_worker_port, log_level="warning"))

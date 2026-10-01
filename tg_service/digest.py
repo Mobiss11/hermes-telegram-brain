@@ -14,24 +14,27 @@ _STATUS = {"sent": "✅", "scheduled": "📅", "rejected": "🚫", "expired": "�
 
 
 async def build_digest(hours: int = 24) -> str:
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return "📋 <b>Сводка недоступна: allowlist пуст.</b>"
     pool = await get_pool()
     async with pool.acquire() as conn:
         drafts = await conn.fetch(
             """
             SELECT o.id, o.status, o.text, o.requested_by, o.sent_msg_id, c.title, c.username
             FROM outbox o LEFT JOIN chats c ON c.id = o.chat_id
-            WHERE o.created_at > now() - make_interval(hours => $1) ORDER BY o.id
-            """, hours,
+            WHERE o.created_at > now() - make_interval(hours => $1) AND o.chat_id = ANY($2::bigint[]) ORDER BY o.id
+            """, hours, allowed,
         )
         stats = await conn.fetchrow(
             """
-            SELECT (SELECT count(*) FROM messages WHERE inserted_at > now() - make_interval(hours => $1)) AS msgs,
-                   (SELECT count(*) FROM message_content WHERE kind = 'transcript' AND created_at > now() - make_interval(hours => $1)) AS transcripts,
-                   (SELECT count(*) FROM message_content WHERE kind = 'document' AND created_at > now() - make_interval(hours => $1)) AS docs,
-                   (SELECT count(*) FROM message_content WHERE kind = 'image' AND created_at > now() - make_interval(hours => $1)) AS images,
-                   (SELECT coalesce(sum((meta->>'cost')::numeric), 0) FROM message_content WHERE kind = 'image' AND created_at > now() - make_interval(hours => $1)) AS vision_cost,
-                   (SELECT count(*) FROM media_jobs WHERE status = 'failed' AND created_at > now() - make_interval(hours => $1)) AS media_failed
-            """, hours,
+            SELECT (SELECT count(*) FROM messages WHERE chat_id = ANY($2::bigint[]) AND inserted_at > now() - make_interval(hours => $1)) AS msgs,
+                   (SELECT count(*) FROM message_content WHERE chat_id = ANY($2::bigint[]) AND kind = 'transcript' AND created_at > now() - make_interval(hours => $1)) AS transcripts,
+                   (SELECT count(*) FROM message_content WHERE chat_id = ANY($2::bigint[]) AND kind = 'document' AND created_at > now() - make_interval(hours => $1)) AS docs,
+                   (SELECT count(*) FROM message_content WHERE chat_id = ANY($2::bigint[]) AND kind = 'image' AND created_at > now() - make_interval(hours => $1)) AS images,
+                   (SELECT coalesce(sum((meta->>'cost')::numeric), 0) FROM message_content WHERE chat_id = ANY($2::bigint[]) AND kind = 'image' AND created_at > now() - make_interval(hours => $1)) AS vision_cost,
+                   (SELECT count(*) FROM media_jobs WHERE chat_id = ANY($2::bigint[]) AND status = 'failed' AND created_at > now() - make_interval(hours => $1)) AS media_failed
+            """, hours, allowed,
         )
     counts = {}
     for d in drafts:

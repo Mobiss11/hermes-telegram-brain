@@ -21,6 +21,11 @@ def _rows(rows):
     return [dict(r) for r in rows]
 
 
+def _require_allowlisted_chat(chat_id: int) -> None:
+    if not settings.is_allowed_chat_id(chat_id):
+        raise HTTPException(404, "chat not found")
+
+
 class SyncRequest(BaseModel):
     chat_id: int
     from_date: datetime | None = None
@@ -81,11 +86,15 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health():
+        allowed = list(settings.allowed_chat_ids)
+        if not allowed:
+            raise HTTPException(503, "allowlist is empty")
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT (SELECT count(*) FROM chats) AS chats, (SELECT count(*) FROM messages) AS messages, "
-                "(SELECT max(date) FROM messages) AS newest_message"
+                "SELECT (SELECT count(*) FROM chats WHERE id = ANY($1::bigint[])) AS chats, "
+                "(SELECT count(*) FROM messages WHERE chat_id = ANY($1::bigint[])) AS messages, "
+                "(SELECT max(date) FROM messages WHERE chat_id = ANY($1::bigint[])) AS newest_message", allowed
             )
         return dict(row)
 
@@ -101,6 +110,7 @@ def create_app() -> FastAPI:
 
     @app.get("/chats/{chat_id}")
     async def chat(chat_id: int):
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await repo.get_chat(conn, chat_id)
@@ -110,6 +120,7 @@ def create_app() -> FastAPI:
 
     @app.patch("/chats/{chat_id}/track")
     async def track(chat_id: int, body: TrackRequest):
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await repo.set_tracked(conn, chat_id, body.is_tracked)
@@ -119,12 +130,7 @@ def create_app() -> FastAPI:
 
     @app.get("/users/{user_id}")
     async def user(user_id: int):
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            row = await repo.get_user(conn, user_id)
-        if row is None:
-            raise HTTPException(404, "user not found")
-        return dict(row)
+        raise HTTPException(404, "user profiles are unavailable in research-only mode")
 
     # ---- messages ----
     @app.get("/chats/{chat_id}/messages")
@@ -137,6 +143,7 @@ def create_app() -> FastAPI:
         include_deleted: bool = False, order: str = Query("desc", pattern="^(asc|desc)$"),
         limit: int = Query(100, le=1000),
     ):
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await repo.list_messages(
@@ -147,6 +154,7 @@ def create_app() -> FastAPI:
 
     @app.get("/chats/{chat_id}/messages/{msg_id}")
     async def message(chat_id: int, msg_id: int, raw: bool = False):
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await repo.get_message(conn, chat_id, msg_id)
@@ -161,6 +169,7 @@ def create_app() -> FastAPI:
     @app.get("/chats/{chat_id}/messages/{msg_id}/context")
     async def context(chat_id: int, msg_id: int, before: int = Query(20, le=200), after: int = Query(20, le=200)):
         """The message, N neighbours each side, its reply chain, replies to it, and its album."""
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             target = await repo.get_message(conn, chat_id, msg_id)
@@ -194,6 +203,8 @@ def create_app() -> FastAPI:
         limit: int = Query(20, le=200),
     ):
         """Meaning-based search over messages, transcripts, document and image text (local embeddings)."""
+        if chat_id is not None:
+            _require_allowlisted_chat(chat_id)
         import httpx
         from ..media.embed import to_pgvector
         try:
@@ -221,6 +232,8 @@ def create_app() -> FastAPI:
         sender_id: int | None = None, mode: str = Query("fts", pattern="^(fts|substring)$"),
         limit: int = Query(50, le=500), offset: int = 0,
     ):
+        if chat_id is not None:
+            _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await repo.search_messages(
@@ -232,6 +245,7 @@ def create_app() -> FastAPI:
     # ---- backfill jobs ----
     @app.post("/sync", status_code=201)
     async def create_sync(body: SyncRequest):
+        _require_allowlisted_chat(body.chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             if await conn.fetchval("SELECT 1 FROM chats WHERE id = $1", body.chat_id) is None:
@@ -267,6 +281,7 @@ def create_app() -> FastAPI:
     @app.get("/chats/{chat_id}/messages/{msg_id}/media")
     async def media_state(chat_id: int, msg_id: int):
         """Downloaded file, derived text (transcript / document) and recent jobs for a message."""
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             if await conn.fetchval("SELECT 1 FROM messages WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id) is None:
@@ -277,6 +292,7 @@ def create_app() -> FastAPI:
     async def media_request(chat_id: int, msg_id: int, body: MediaRequest):
         """Queue download (+ transcribe/extract). action=auto picks the follow-up by media type.
         With wait>0 the call blocks until the derived text exists or the timeout passes."""
+        _require_allowlisted_chat(chat_id)
         if body.action not in ("auto", "download", "transcribe", "extract"):
             raise HTTPException(422, "bad action")
         pool = await get_pool()
@@ -385,6 +401,7 @@ def create_app() -> FastAPI:
     async def send_policy(chat_id: int, body: SendPolicyRequest):
         if body.send_policy not in ("deny", "confirm"):
             raise HTTPException(422, "send_policy must be deny or confirm")
+        _require_allowlisted_chat(chat_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await repo.set_send_policy(conn, chat_id, body.send_policy)

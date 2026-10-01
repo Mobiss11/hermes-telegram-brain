@@ -3,6 +3,18 @@ from datetime import datetime
 
 import asyncpg
 
+from .config import settings
+
+
+def _require_allowed_chat(chat_id: int | None) -> None:
+    if not settings.is_allowed_chat_id(chat_id):
+        raise PermissionError("chat is not allowlisted")
+
+
+def _allowed_chat_ids() -> list[int]:
+    return list(settings.allowed_chat_ids)
+
+
 MESSAGE_COLUMNS = [
     "chat_id", "msg_id", "sender_id", "post_author", "date", "edit_date", "text", "entities",
     "is_out", "mentioned", "is_post", "silent", "pinned", "via_bot_id",
@@ -49,6 +61,7 @@ _SELECT_MSG = (
 # ---------- chats / users ----------
 
 async def upsert_chat(conn: asyncpg.Connection, row: dict):
+    _require_allowed_chat(row["id"])
     await conn.execute(
         """
         INSERT INTO chats (id, type, title, username, first_name, last_name, is_forum, participants_count, raw)
@@ -70,6 +83,7 @@ async def upsert_chat(conn: asyncpg.Connection, row: dict):
 
 
 async def ensure_chat_stub(conn: asyncpg.Connection, chat_id: int):
+    _require_allowed_chat(chat_id)
     await conn.execute(
         "INSERT INTO chats (id, type) VALUES ($1, 'unknown') ON CONFLICT (id) DO NOTHING", chat_id
     )
@@ -95,6 +109,7 @@ async def upsert_user(conn: asyncpg.Connection, row: dict):
 
 
 async def bump_chat_cursor(conn: asyncpg.Connection, chat_id: int, msg_id: int, date: datetime):
+    _require_allowed_chat(chat_id)
     await conn.execute(
         """
         UPDATE chats SET
@@ -109,6 +124,9 @@ async def bump_chat_cursor(conn: asyncpg.Connection, chat_id: int, msg_id: int, 
 
 
 async def list_chats(conn, *, q: str | None, type_: str | None, tracked: bool | None, limit: int, offset: int):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return []
     return await conn.fetch(
         """
         SELECT c.*,
@@ -117,14 +135,16 @@ async def list_chats(conn, *, q: str | None, type_: str | None, tracked: bool | 
         WHERE ($1::text IS NULL OR c.title ILIKE '%' || $1 || '%' OR lower(c.username) = lower($1))
           AND ($2::text IS NULL OR c.type = $2)
           AND ($3::boolean IS NULL OR c.is_tracked = $3)
+          AND c.id = ANY($6::bigint[])
         ORDER BY c.last_message_at DESC NULLS LAST
         LIMIT $4 OFFSET $5
         """,
-        q, type_, tracked, limit, offset,
+        q, type_, tracked, limit, offset, allowed,
     )
 
 
 async def get_chat(conn, chat_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow(
         """
         SELECT c.*,
@@ -141,14 +161,17 @@ async def get_chat(conn, chat_id: int):
 
 
 async def set_tracked(conn, chat_id: int, tracked: bool):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow(
         "UPDATE chats SET is_tracked = $2, updated_at = now() WHERE id = $1 RETURNING *", chat_id, tracked
     )
 
 
 async def is_tracked(conn, chat_id: int) -> bool:
+    if not settings.is_allowed_chat_id(chat_id):
+        return False
     v = await conn.fetchval("SELECT is_tracked FROM chats WHERE id = $1", chat_id)
-    return True if v is None else v
+    return bool(v)
 
 
 async def get_user(conn, user_id: int):
@@ -158,22 +181,27 @@ async def get_user(conn, user_id: int):
 # ---------- messages ----------
 
 async def upsert_message(conn: asyncpg.Connection, row: dict):
+    _require_allowed_chat(row["chat_id"])
     await conn.execute(_INSERT_MESSAGE, *[row[c] for c in MESSAGE_COLUMNS])
 
 
 async def upsert_messages(conn: asyncpg.Connection, rows: list[dict]):
     if not rows:
         return
+    for row in rows:
+        _require_allowed_chat(row["chat_id"])
     await conn.executemany(_INSERT_MESSAGE, [[r[c] for c in MESSAGE_COLUMNS] for r in rows])
 
 
 async def get_message_text(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow(
         "SELECT text, media, edit_date, date FROM messages WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id
     )
 
 
 async def record_edit(conn, chat_id: int, msg_id: int, old_text, old_media):
+    _require_allowed_chat(chat_id)
     await conn.execute(
         "INSERT INTO message_edits (chat_id, msg_id, old_text, old_media) VALUES ($1, $2, $3, $4)",
         chat_id, msg_id, old_text, old_media,
@@ -181,6 +209,9 @@ async def record_edit(conn, chat_id: int, msg_id: int, old_text, old_media):
 
 
 async def mark_deleted(conn, msg_ids: list[int], chat_id: int | None) -> int:
+    if chat_id is None:
+        return 0
+    _require_allowed_chat(chat_id)
     if chat_id is not None:
         res = await conn.execute(
             "UPDATE messages SET deleted_at = now(), updated_at = now() "
@@ -203,6 +234,7 @@ async def list_messages(
     conn, chat_id: int, *, from_date=None, to_date=None, before_id=None, after_id=None,
     sender_id=None, topic_id=None, include_deleted=False, order="desc", limit=100,
 ):
+    _require_allowed_chat(chat_id)
     direction = "ASC" if order == "asc" else "DESC"
     return await conn.fetch(
         _SELECT_MSG
@@ -221,14 +253,17 @@ async def list_messages(
 
 
 async def get_message(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow(_SELECT_MSG + "WHERE m.chat_id = $1 AND m.msg_id = $2", chat_id, msg_id)
 
 
 async def get_raw(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetchval("SELECT raw FROM messages WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id)
 
 
 async def get_edits(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         "SELECT replaced_at, old_text, old_media FROM message_edits WHERE chat_id = $1 AND msg_id = $2 ORDER BY id",
         chat_id, msg_id,
@@ -236,12 +271,14 @@ async def get_edits(conn, chat_id: int, msg_id: int):
 
 
 async def get_album(conn, chat_id: int, grouped_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         _SELECT_MSG + "WHERE m.chat_id = $1 AND m.grouped_id = $2 ORDER BY m.msg_id", chat_id, grouped_id
     )
 
 
 async def get_replies(conn, chat_id: int, msg_id: int, limit: int = 50):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         _SELECT_MSG + "WHERE m.chat_id = $1 AND m.reply_to_msg_id = $2 ORDER BY m.msg_id LIMIT $3",
         chat_id, msg_id, limit,
@@ -252,6 +289,9 @@ async def search_messages(
     conn, q: str, *, chat_id=None, from_date=None, to_date=None, sender_id=None,
     mode="fts", limit=50, offset=0,
 ):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     if mode == "substring":
         where_q = (
             "(m.text ILIKE '%' || $1 || '%' OR (m.chat_id, m.msg_id) IN "
@@ -272,16 +312,19 @@ async def search_messages(
           AND ($4::timestamptz IS NULL OR m.date <= $4)
           AND ($5::bigint IS NULL OR m.sender_id = $5)
           AND m.deleted_at IS NULL
+          AND m.chat_id = ANY($8::bigint[])
         ORDER BY m.date DESC
         LIMIT $6 OFFSET $7
         """,
-        q, chat_id, from_date, to_date, sender_id, limit, offset,
+        q, chat_id, from_date, to_date, sender_id, limit, offset, allowed,
     )
 
 
 # ---------- sync jobs ----------
 
 async def create_job(conn, **kw):
+    if not settings.is_allowed_chat_id(kw["chat_id"]):
+        raise PermissionError("chat is not allowlisted")
     return await conn.fetchrow(
         """
         INSERT INTO sync_jobs (chat_id, from_date, to_date, min_id, max_id, max_messages, requested_by)
@@ -293,53 +336,92 @@ async def create_job(conn, **kw):
 
 
 async def get_job(conn, job_id: int):
-    return await conn.fetchrow("SELECT * FROM sync_jobs WHERE id = $1", job_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
+    return await conn.fetchrow("SELECT * FROM sync_jobs WHERE id = $1 AND chat_id = ANY($2::bigint[])", job_id, allowed)
 
 
 async def list_jobs(conn, status: str | None, limit: int = 50):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
-        "SELECT * FROM sync_jobs WHERE ($1::text IS NULL OR status = $1) ORDER BY id DESC LIMIT $2", status, limit
+        "SELECT * FROM sync_jobs WHERE ($1::text IS NULL OR status = $1) "
+        "AND chat_id = ANY($3::bigint[]) ORDER BY id DESC LIMIT $2", status, limit, allowed
     )
 
 
 async def cancel_job(conn, job_id: int):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
     return await conn.fetchrow(
         "UPDATE sync_jobs SET status = 'cancelled', finished_at = now() "
-        "WHERE id = $1 AND status IN ('queued', 'running') RETURNING *",
-        job_id,
+        "WHERE id = $1 AND status IN ('queued', 'running') AND chat_id = ANY($2::bigint[]) RETURNING *",
+        job_id, allowed,
     )
 
 
 async def claim_next_job(conn):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return None
     return await conn.fetchrow(
         """
         UPDATE sync_jobs SET status = 'running', started_at = now()
-        WHERE id = (SELECT id FROM sync_jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+        WHERE id = (
+            SELECT id FROM sync_jobs
+            WHERE status = 'queued' AND chat_id = ANY($1::bigint[])
+            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+        )
         RETURNING *
-        """
+        """,
+        allowed,
     )
 
 
 async def job_progress(conn, job_id: int, processed: int, last_msg_id: int | None):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return
     await conn.execute(
-        "UPDATE sync_jobs SET processed = $2, last_msg_id = $3 WHERE id = $1", job_id, processed, last_msg_id
+        "UPDATE sync_jobs SET processed = $2, last_msg_id = $3 "
+        "WHERE id = $1 AND chat_id = ANY($4::bigint[])",
+        job_id, processed, last_msg_id, allowed,
     )
 
 
 async def job_status(conn, job_id: int) -> str | None:
-    return await conn.fetchval("SELECT status FROM sync_jobs WHERE id = $1", job_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
+    return await conn.fetchval(
+        "SELECT status FROM sync_jobs WHERE id = $1 AND chat_id = ANY($2::bigint[])", job_id, allowed
+    )
 
 
 async def finish_job(conn, job_id: int, status: str, error: str | None = None):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return
     await conn.execute(
-        "UPDATE sync_jobs SET status = $2, error = $3, finished_at = now() WHERE id = $1 AND status = 'running'",
-        job_id, status, error,
+        "UPDATE sync_jobs SET status = $2, error = $3, finished_at = now() "
+        "WHERE id = $1 AND status = 'running' AND chat_id = ANY($4::bigint[])",
+        job_id, status, error, allowed,
     )
 
 
 async def reset_running_jobs(conn):
     """Jobs left 'running' by a crashed process go back to the queue."""
-    await conn.execute("UPDATE sync_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'")
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return
+    await conn.execute(
+        "UPDATE sync_jobs SET status = 'queued', started_at = NULL "
+        "WHERE status = 'running' AND chat_id = ANY($1::bigint[])",
+        allowed,
+    )
 
 
 # ---------- media ----------
@@ -350,6 +432,8 @@ MEDIA_ACTIONS = ("download", "transcribe", "extract")
 async def enqueue_media_job(conn, chat_id: int, msg_id: int, action: str, then: str | None = None,
                             requested_by: str | None = None):
     """Idempotent: an active (queued/running) job for the same message+action is reused."""
+    if not settings.is_allowed_chat_id(chat_id):
+        raise PermissionError("chat is not allowlisted")
     row = await conn.fetchrow(
         """
         INSERT INTO media_jobs (chat_id, msg_id, action, "then", requested_by) VALUES ($1, $2, $3, $4, $5)
@@ -363,41 +447,67 @@ async def enqueue_media_job(conn, chat_id: int, msg_id: int, action: str, then: 
 
 
 async def claim_media_job(conn, actions: tuple[str, ...]):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return None
     return await conn.fetchrow(
         """
         UPDATE media_jobs SET status = 'running', started_at = now(), attempts = attempts + 1
-        WHERE id = (SELECT id FROM media_jobs WHERE status = 'queued' AND action = ANY($1::text[])
-                    ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+        WHERE id = (
+            SELECT id FROM media_jobs
+            WHERE status = 'queued' AND action = ANY($1::text[]) AND chat_id = ANY($2::bigint[])
+            ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED
+        )
         RETURNING *
         """,
-        list(actions),
+        list(actions), allowed,
     )
 
 
 async def finish_media_job(conn, job_id: int, status: str, error: str | None = None):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return
     await conn.execute(
-        "UPDATE media_jobs SET status = $2, error = $3, finished_at = now() WHERE id = $1", job_id, status, error
+        "UPDATE media_jobs SET status = $2, error = $3, finished_at = now() "
+        "WHERE id = $1 AND chat_id = ANY($4::bigint[])",
+        job_id, status, error, allowed,
     )
 
 
 async def reset_running_media_jobs(conn, actions: tuple[str, ...]):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return
     await conn.execute(
-        "UPDATE media_jobs SET status = 'queued', started_at = NULL WHERE status = 'running' AND action = ANY($1::text[])",
-        list(actions),
+        "UPDATE media_jobs SET status = 'queued', started_at = NULL "
+        "WHERE status = 'running' AND action = ANY($1::text[]) AND chat_id = ANY($2::bigint[])",
+        list(actions), allowed,
     )
 
 
 async def get_media_job(conn, job_id: int):
-    return await conn.fetchrow("SELECT * FROM media_jobs WHERE id = $1", job_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
+    return await conn.fetchrow(
+        "SELECT * FROM media_jobs WHERE id = $1 AND chat_id = ANY($2::bigint[])", job_id, allowed
+    )
 
 
 async def list_media_jobs(conn, status: str | None, limit: int = 50):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return []
     return await conn.fetch(
-        "SELECT * FROM media_jobs WHERE ($1::text IS NULL OR status = $1) ORDER BY id DESC LIMIT $2", status, limit
+        "SELECT * FROM media_jobs WHERE ($1::text IS NULL OR status = $1) "
+        "AND chat_id = ANY($3::bigint[]) ORDER BY id DESC LIMIT $2",
+        status, limit, allowed,
     )
 
 
 async def media_jobs_for_message(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         "SELECT id, action, \"then\", status, error, created_at, finished_at FROM media_jobs "
         "WHERE chat_id = $1 AND msg_id = $2 ORDER BY id DESC LIMIT 10",
@@ -406,10 +516,12 @@ async def media_jobs_for_message(conn, chat_id: int, msg_id: int):
 
 
 async def get_media_file(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow("SELECT * FROM media_files WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id)
 
 
 async def upsert_media_file(conn, chat_id: int, msg_id: int, path: str, mime: str | None, size: int | None, sha256: str | None):
+    _require_allowed_chat(chat_id)
     await conn.execute(
         """
         INSERT INTO media_files (chat_id, msg_id, path, mime, size, sha256) VALUES ($1, $2, $3, $4, $5, $6)
@@ -421,6 +533,7 @@ async def upsert_media_file(conn, chat_id: int, msg_id: int, path: str, mime: st
 
 
 async def get_content(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         "SELECT kind, text, language, model, duration, meta, created_at FROM message_content "
         "WHERE chat_id = $1 AND msg_id = $2 ORDER BY kind",
@@ -430,6 +543,7 @@ async def get_content(conn, chat_id: int, msg_id: int):
 
 async def upsert_content(conn, chat_id: int, msg_id: int, kind: str, text: str, *, language=None, model=None,
                          duration=None, meta=None):
+    _require_allowed_chat(chat_id)
     await conn.execute(
         """
         INSERT INTO message_content (chat_id, msg_id, kind, text, language, model, duration, meta)
@@ -444,6 +558,9 @@ async def upsert_content(conn, chat_id: int, msg_id: int, kind: str, text: str, 
 async def media_candidates(conn, *, since, kinds: list[str], non_channel_only: bool = True, max_mb: int | None = None,
                            limit: int = 5000):
     """Messages with media that have no derived content yet (for backlog enqueueing)."""
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
         """
         SELECT m.chat_id, m.msg_id, m.media_type, m.media
@@ -451,24 +568,33 @@ async def media_candidates(conn, *, since, kinds: list[str], non_channel_only: b
         WHERE m.media_type = ANY($1::text[]) AND m.date >= $2 AND m.deleted_at IS NULL
           AND (NOT $3::boolean OR c.type <> 'channel')
           AND ($4::bigint IS NULL OR COALESCE((m.media->>'size')::bigint, 0) <= $4)
+          AND m.chat_id = ANY($6::bigint[])
           AND NOT EXISTS (SELECT 1 FROM message_content mc WHERE mc.chat_id = m.chat_id AND mc.msg_id = m.msg_id)
           AND NOT EXISTS (SELECT 1 FROM media_jobs j WHERE j.chat_id = m.chat_id AND j.msg_id = m.msg_id
                           AND j.status IN ('queued', 'running', 'skipped'))
         ORDER BY m.date DESC LIMIT $5
         """,
-        kinds, since, non_channel_only, (max_mb * 1024 * 1024) if max_mb else None, limit,
+        kinds, since, non_channel_only, (max_mb * 1024 * 1024) if max_mb else None, limit, allowed,
     )
 
 
 async def chat_type(conn, chat_id: int) -> str | None:
+    _require_allowed_chat(chat_id)
     return await conn.fetchval("SELECT type FROM chats WHERE id = $1", chat_id)
 
 
 async def expired_media_files(conn, before):
-    return await conn.fetch("SELECT chat_id, msg_id, path, size FROM media_files WHERE downloaded_at < $1", before)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
+    return await conn.fetch(
+        "SELECT chat_id, msg_id, path, size FROM media_files "
+        "WHERE downloaded_at < $1 AND chat_id = ANY($2::bigint[])", before, allowed
+    )
 
 
 async def delete_media_file(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     await conn.execute("DELETE FROM media_files WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id)
 
 
@@ -476,8 +602,11 @@ async def delete_media_file(conn, chat_id: int, msg_id: int):
 
 async def create_draft(conn, *, chat_id, reply_to_msg_id, text, reason, requested_by, idempotency_key, ttl_minutes,
                        attachments=None, schedule_at=None, action="send", target_msg_id=None, original_text=None):
+    _require_allowed_chat(chat_id)
     if idempotency_key:
-        existing = await conn.fetchrow("SELECT * FROM outbox WHERE idempotency_key = $1", idempotency_key)
+        existing = await conn.fetchrow(
+            "SELECT * FROM outbox WHERE idempotency_key = $1 AND chat_id = $2", idempotency_key, chat_id
+        )
         if existing:
             return existing, False
     row = await conn.fetchrow(
@@ -493,22 +622,38 @@ async def create_draft(conn, *, chat_id, reply_to_msg_id, text, reason, requeste
 
 
 async def update_draft_text(conn, draft_id: int, text: str):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
     return await conn.fetchrow(
-        "UPDATE outbox SET text = $2 WHERE id = $1 AND status = 'pending' RETURNING *", draft_id, text
+        "UPDATE outbox SET text = $2 WHERE id = $1 AND status = 'pending' "
+        "AND chat_id = ANY($3::bigint[]) RETURNING *",
+        draft_id, text, allowed,
     )
 
 
 async def set_draft_notice_user(conn, draft_id: int, user_msg_id: int):
-    await conn.execute("UPDATE outbox SET notice_user_msg_id = $2 WHERE id = $1", draft_id, user_msg_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return
+    await conn.execute(
+        "UPDATE outbox SET notice_user_msg_id = $2 WHERE id = $1 AND chat_id = ANY($3::bigint[])",
+        draft_id, user_msg_id, allowed,
+    )
 
 
 async def draft_by_notice_user(conn, user_msg_id: int):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
     return await conn.fetchrow(
-        "SELECT * FROM outbox WHERE notice_user_msg_id = $1 ORDER BY id DESC LIMIT 1", user_msg_id
+        "SELECT * FROM outbox WHERE notice_user_msg_id = $1 AND chat_id = ANY($2::bigint[]) "
+        "ORDER BY id DESC LIMIT 1", user_msg_id, allowed
     )
 
 
 async def recent_context(conn, chat_id: int, limit: int = 3):
+    _require_allowed_chat(chat_id)
     return await conn.fetch(
         _SELECT_MSG + "WHERE m.chat_id = $1 AND m.deleted_at IS NULL AND m.action_type IS NULL "
         "ORDER BY m.msg_id DESC LIMIT $2", chat_id, limit,
@@ -518,6 +663,9 @@ async def recent_context(conn, chat_id: int, limit: int = 3):
 # ---------- embeddings ----------
 
 async def messages_to_embed(conn, *, include_channels: bool, limit: int = 256):
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return []
     return await conn.fetch(
         """
         SELECT m.chat_id, m.msg_id, m.text,
@@ -530,15 +678,18 @@ async def messages_to_embed(conn, *, include_channels: bool, limit: int = 256):
         LEFT JOIN message_embeddings e ON e.chat_id = m.chat_id AND e.msg_id = m.msg_id
         WHERE e.chat_id IS NULL AND m.deleted_at IS NULL AND m.action_type IS NULL
           AND ($1::boolean OR c.type <> 'channel')
+          AND m.chat_id = ANY($2::bigint[])
           AND (length(m.text) >= 15 OR EXISTS (SELECT 1 FROM message_content mc WHERE mc.chat_id = m.chat_id AND mc.msg_id = m.msg_id))
-        ORDER BY m.date DESC LIMIT $2
+        ORDER BY m.date DESC LIMIT $3
         """,
-        include_channels, limit,
+        include_channels, allowed, limit,
     )
 
 
 async def upsert_embeddings(conn, rows: list[tuple]):
     """rows: (chat_id, msg_id, model, vector_as_str)"""
+    for chat_id, *_ in rows:
+        _require_allowed_chat(chat_id)
     await conn.executemany(
         "INSERT INTO message_embeddings (chat_id, msg_id, model, embedding) VALUES ($1, $2, $3, $4::vector) "
         "ON CONFLICT (chat_id, msg_id) DO UPDATE SET model = EXCLUDED.model, embedding = EXCLUDED.embedding, created_at = now()",
@@ -547,10 +698,14 @@ async def upsert_embeddings(conn, rows: list[tuple]):
 
 
 async def drop_embedding(conn, chat_id: int, msg_id: int):
+    _require_allowed_chat(chat_id)
     await conn.execute("DELETE FROM message_embeddings WHERE chat_id = $1 AND msg_id = $2", chat_id, msg_id)
 
 
 async def semantic_search(conn, vector: str, *, chat_id=None, from_date=None, to_date=None, limit=20):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
         _SELECT_MSG
         + """
@@ -559,17 +714,22 @@ async def semantic_search(conn, vector: str, *, chat_id=None, from_date=None, to
           AND ($3::timestamptz IS NULL OR m.date >= $3)
           AND ($4::timestamptz IS NULL OR m.date <= $4)
           AND m.deleted_at IS NULL
+          AND m.chat_id = ANY($6::bigint[])
         ORDER BY e.embedding <=> $1::vector
         LIMIT $5
         """,
-        vector, chat_id, from_date, to_date, limit,
+        vector, chat_id, from_date, to_date, limit, allowed,
     )
 
 
 async def embedding_stats(conn):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return {"embedded": 0, "eligible": 0}
     return await conn.fetchrow(
-        "SELECT (SELECT count(*) FROM message_embeddings) AS embedded, "
-        "(SELECT count(*) FROM messages WHERE deleted_at IS NULL AND length(text) >= 15) AS eligible"
+        "SELECT (SELECT count(*) FROM message_embeddings WHERE chat_id = ANY($1::bigint[])) AS embedded, "
+        "(SELECT count(*) FROM messages WHERE chat_id = ANY($1::bigint[]) AND deleted_at IS NULL "
+        "AND length(text) >= 15) AS eligible", allowed
     )
 
 
@@ -592,54 +752,79 @@ async def health_set(conn, key: str, ok: bool, detail: str | None):
 
 
 async def get_draft(conn, draft_id: int):
-    return await conn.fetchrow("SELECT * FROM outbox WHERE id = $1", draft_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
+    return await conn.fetchrow("SELECT * FROM outbox WHERE id = $1 AND chat_id = ANY($2::bigint[])", draft_id, allowed)
 
 
 async def list_drafts(conn, status: str | None, limit: int = 50):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
-        "SELECT * FROM outbox WHERE ($1::text IS NULL OR status = $1) ORDER BY id DESC LIMIT $2", status, limit
+        "SELECT * FROM outbox WHERE ($1::text IS NULL OR status = $1) "
+        "AND chat_id = ANY($3::bigint[]) ORDER BY id DESC LIMIT $2", status, limit, allowed
     )
 
 
 async def set_draft_notice(conn, draft_id: int, notice_msg_id: int):
-    await conn.execute("UPDATE outbox SET notice_msg_id = $2 WHERE id = $1", draft_id, notice_msg_id)
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return
+    await conn.execute(
+        "UPDATE outbox SET notice_msg_id = $2 WHERE id = $1 AND chat_id = ANY($3::bigint[])",
+        draft_id, notice_msg_id, allowed,
+    )
 
 
 async def decide_draft(conn, draft_id: int, status: str, *, sent_msg_id=None, error=None):
     """Atomic transition from pending; returns the row or None if it was not pending anymore."""
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return None
     return await conn.fetchrow(
         "UPDATE outbox SET status = $2, sent_msg_id = $3, error = $4, decided_at = now() "
-        "WHERE id = $1 AND status = 'pending' RETURNING *",
-        draft_id, status, sent_msg_id, error,
+        "WHERE id = $1 AND status = 'pending' AND chat_id = ANY($5::bigint[]) RETURNING *",
+        draft_id, status, sent_msg_id, error, allowed,
     )
 
 
 async def expire_drafts(conn):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
         "UPDATE outbox SET status = 'expired', decided_at = now() "
-        "WHERE status = 'pending' AND expires_at < now() RETURNING *"
+        "WHERE status = 'pending' AND expires_at < now() AND chat_id = ANY($1::bigint[]) RETURNING *", allowed
     )
 
 
 async def reject_all_pending(conn, error: str):
+    allowed = _allowed_chat_ids()
+    if not allowed:
+        return []
     return await conn.fetch(
-        "UPDATE outbox SET status = 'rejected', error = $1, decided_at = now() WHERE status = 'pending' RETURNING *",
-        error,
+        "UPDATE outbox SET status = 'rejected', error = $1, decided_at = now() "
+        "WHERE status = 'pending' AND chat_id = ANY($2::bigint[]) RETURNING *", error, allowed
     )
 
 
 async def outbox_rate(conn, chat_id: int) -> tuple[int, int]:
+    _require_allowed_chat(chat_id)
+    allowed = _allowed_chat_ids()
     row = await conn.fetchrow(
         """
         SELECT count(*) AS total, count(*) FILTER (WHERE chat_id = $1) AS per_chat
-        FROM outbox WHERE created_at > now() - interval '1 hour'
+        FROM outbox WHERE created_at > now() - interval '1 hour' AND chat_id = ANY($2::bigint[])
         """,
-        chat_id,
+        chat_id, allowed,
     )
     return row["total"], row["per_chat"]
 
 
 async def set_send_policy(conn, chat_id: int, policy: str):
+    _require_allowed_chat(chat_id)
     return await conn.fetchrow(
         "UPDATE chats SET send_policy = $2, updated_at = now() WHERE id = $1 RETURNING *", chat_id, policy
     )

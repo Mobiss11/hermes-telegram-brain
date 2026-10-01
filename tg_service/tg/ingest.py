@@ -4,26 +4,34 @@ import logging
 from telethon.tl import types as t
 
 from .. import repo
+from ..config import settings
 from ..db import get_pool
 from ..media.policy import auto_action_for
-from .mapper import chat_row, message_row, user_row
+from .mapper import chat_row, message_row
 
 log = logging.getLogger(__name__)
 
 
 async def upsert_peer(conn, entity):
+    """Persist only allowlisted broadcast-channel metadata; never retain ordinary-user profiles."""
     if entity is None:
         return
-    if isinstance(entity, t.User):
-        await repo.upsert_user(conn, user_row(entity))
-    elif isinstance(entity, (t.Chat, t.ChatForbidden, t.Channel, t.ChannelForbidden)):
-        await repo.upsert_chat(conn, chat_row(entity))
+    if isinstance(entity, (t.Channel, t.ChannelForbidden)):
+        row = chat_row(entity)
+        if row["type"] == "channel" and settings.is_allowed_chat_id(row["id"]):
+            await repo.upsert_chat(conn, row)
 
 
 async def ingest_message(m, *, chat=None, sender=None, bump_cursor=True, track_edit=False):
     """Store one message. chat/sender are Telethon entities if already resolved."""
-    pool = await get_pool()
     row = message_row(m)
+    if not settings.is_allowed_chat_id(row["chat_id"]):
+        log.warning("blocked ingestion from non-allowlisted chat id %s", row["chat_id"])
+        return None
+    if chat is not None and chat_row(chat)["type"] != "channel":
+        log.warning("blocked ingestion from non-channel allowlisted chat id %s", row["chat_id"])
+        return None
+    pool = await get_pool()
     async with pool.acquire() as conn:
         if chat is not None:
             await upsert_peer(conn, chat)
@@ -57,10 +65,18 @@ async def ingest_batch(client, messages, *, bump_cursor=True):
     if not messages:
         return 0
     pool = await get_pool()
-    rows = []
+    selected = []
     peers = {}
     for m in messages:
-        rows.append(message_row(m))
+        row = message_row(m)
+        if not settings.is_allowed_chat_id(row["chat_id"]):
+            log.warning("blocked batch ingestion from non-allowlisted chat id %s", row["chat_id"])
+            continue
+        selected.append((m, row))
+    if not selected:
+        return 0
+    rows = [row for _, row in selected]
+    for m, row in selected:
         if m.sender_id is not None and m.sender_id not in peers:
             try:
                 peers[m.sender_id] = await m.get_sender()

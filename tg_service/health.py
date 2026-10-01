@@ -44,10 +44,14 @@ async def run_checks() -> dict[str, tuple[bool, str]]:
     pool = await get_pool()
 
     try:
+        allowed = list(settings.allowed_chat_ids)
+        if not allowed:
+            return {"db": (False, "allowlist is empty")}
         async with pool.acquire() as conn:
-            newest = await conn.fetchval("SELECT max(date) FROM messages")
+            newest = await conn.fetchval("SELECT max(date) FROM messages WHERE chat_id = ANY($1::bigint[])", allowed)
             failed = await conn.fetchval(
-                "SELECT count(*) FROM media_jobs WHERE status = 'failed' AND finished_at > now() - interval '1 hour'")
+                "SELECT count(*) FROM media_jobs WHERE status = 'failed' AND finished_at > now() - interval '1 hour' "
+                "AND chat_id = ANY($1::bigint[])", allowed)
         checks["db"] = (True, "ok")
     except Exception as e:
         checks["db"] = (False, f"{type(e).__name__}: {e}")

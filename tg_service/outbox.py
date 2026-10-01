@@ -110,6 +110,8 @@ class DraftRejected(Exception):
 
 
 async def _check_policy(conn, chat_id: int, text: str, has_attachments: bool = False):
+    if not settings.is_allowed_chat_id(chat_id):
+        raise DraftRejected("chat is not allowlisted")
     if not settings.send_enabled:
         raise DraftRejected("sending is disabled in config (SEND_ENABLED=false)")
     if _stopped:
@@ -157,6 +159,8 @@ async def _resolve_attachments(conn, items: list[str] | None) -> list[dict] | No
         m = _TG_REF.match(ref)
         if m:
             cid, mid = int(m.group(1)), int(m.group(2))
+            if not settings.is_allowed_chat_id(cid):
+                raise DraftRejected(f"{ref}: chat is not allowlisted")
             msg = await conn.fetchrow("SELECT media_type, media FROM messages WHERE chat_id = $1 AND msg_id = $2", cid, mid)
             if msg is None or not msg["media_type"]:
                 raise DraftRejected(f"{ref}: no such message with media")
@@ -277,6 +281,8 @@ async def create_draft(*, chat_id: int, text: str = "", reply_to_msg_id: int | N
                        requested_by: str | None = None, idempotency_key: str | None = None,
                        attachments: list[str] | None = None, schedule_at=None,
                        action: str = "send", target_msg_id: int | None = None) -> dict:
+    if not settings.is_allowed_chat_id(chat_id):
+        raise DraftRejected("chat is not allowlisted")
     pool = await get_pool()
     async with pool.acquire() as conn:
         if action not in ("send", "edit", "delete"):
@@ -467,7 +473,10 @@ async def decide(draft_id: int, approve: bool) -> str:
         await _reply_notice(draft, "🛑 Отправка выключена (stop). Перезапусти сервис.")
         return "отправка выключена"
     async with pool.acquire() as conn:
-        still = await conn.fetchval("SELECT status = 'pending' AND expires_at > now() FROM outbox WHERE id = $1", draft_id)
+        still = await conn.fetchval(
+            "SELECT status = 'pending' AND expires_at > now() FROM outbox "
+            "WHERE id = $1 AND chat_id = ANY($2::bigint[])", draft_id, list(settings.allowed_chat_ids)
+        )
     if not still:
         async with pool.acquire() as conn:
             await repo.decide_draft(conn, draft_id, "expired")

@@ -20,8 +20,11 @@ async def sync_dialogs(client: TelegramClient) -> int:
     async for d in client.iter_dialogs():
         if d.entity is None:
             continue
+        row = chat_row(d.entity)
+        if row["type"] != "channel" or not settings.is_allowed_chat_id(row["id"]):
+            continue
         async with pool.acquire() as conn:
-            await repo.upsert_chat(conn, chat_row(d.entity))
+            await repo.upsert_chat(conn, row)
         if d.message is not None:
             try:
                 sender = await d.message.get_sender()
@@ -35,6 +38,9 @@ async def sync_dialogs(client: TelegramClient) -> int:
 
 async def _pull(client, chat_id: int, **kw) -> tuple[int, int | None]:
     """Iterate messages and store them in batches. Returns (count, last msg id seen)."""
+    if not settings.is_allowed_chat_id(chat_id):
+        log.warning("blocked history pull from non-allowlisted chat id %s", chat_id)
+        return 0, None
     batch, count, last_id = [], 0, None
     async for m in client.iter_messages(chat_id, **kw):
         batch.append(m)
@@ -48,15 +54,20 @@ async def _pull(client, chat_id: int, **kw) -> tuple[int, int | None]:
 
 async def catch_up(client: TelegramClient):
     """For each tracked chat: seed INITIAL_HISTORY on first sight, otherwise fetch everything after last_msg_id."""
+    allowed = list(settings.allowed_chat_ids)
+    if not allowed:
+        return
     pool = await get_pool()
     async with pool.acquire() as conn:
         chats = await conn.fetch(
             "SELECT id, type, title, history_seeded, last_msg_id FROM chats "
-            "WHERE is_tracked AND type <> 'unknown' ORDER BY last_message_at DESC NULLS LAST"
+            "WHERE is_tracked AND type = 'channel' AND id = ANY($1::bigint[]) "
+            "ORDER BY last_message_at DESC NULLS LAST", allowed
         )
     log.info("catch-up over %d chats", len(chats))
     for c in chats:
         cid = c["id"]
+
         try:
             if not c["history_seeded"]:
                 if settings.initial_history > 0:

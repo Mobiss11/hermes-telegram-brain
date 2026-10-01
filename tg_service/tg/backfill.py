@@ -13,6 +13,9 @@ log = logging.getLogger(__name__)
 
 
 async def _run_job(client: TelegramClient, job):
+    if not settings.is_allowed_chat_id(job["chat_id"]):
+        log.warning("blocked backfill job %s for non-allowlisted chat id %s", job["id"], job["chat_id"])
+        return
     pool = await get_pool()
     kw = {}
     if job["to_date"]:

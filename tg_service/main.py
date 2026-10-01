@@ -23,6 +23,10 @@ async def main():
     logging.getLogger("telethon").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the bot token in the URL
 
+    if not settings.allowed_chat_ids:
+        log.error("TG_ALLOWED_CHAT_IDS is empty; refusing to start to prevent broad Telegram ingestion")
+        return
+
     await migrate()
     client = make_client()
     await client.connect()

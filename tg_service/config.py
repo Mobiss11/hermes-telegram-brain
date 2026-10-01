@@ -1,5 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .tg.allowlist import parse_chat_ids
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -8,8 +10,18 @@ class Settings(BaseSettings):
     tg_api_hash: str = ""
     tg_session: str = "data/user.session"
     tg_proxy: str = ""  # e.g. socks5://127.0.0.1:1080 or socks5://user:pass@host:port
+    # Comma-separated marked peer ids. Empty is deliberately fail-closed at service startup.
+    tg_allowed_chat_ids: str = ""
 
-    database_url: str = "postgresql://tg:tg@127.0.0.1:5436/tg"
+    # DATABASE_URL remains available for an explicitly supplied external DSN.
+    # The local Compose deployment uses separate fields so a valid PostgreSQL password
+    # never has to be interpolated into a URI.
+    database_url: str = ""
+    db_host: str = "127.0.0.1"
+    db_port: int = 5436
+    db_name: str = "tg"
+    db_user: str = "tg"
+    db_password: str = ""
 
     api_host: str = "127.0.0.1"
     api_port: int = 8077
@@ -24,8 +36,8 @@ class Settings(BaseSettings):
 
     # media
     media_dir: str = "data/media"
-    media_auto_transcribe: bool = True        # voice / video notes in non-channel chats
-    media_auto_extract: bool = True           # text documents in non-channel chats
+    media_auto_transcribe: bool = False       # opt in only after a data-transfer decision
+    media_auto_extract: bool = False          # opt in only after a data-transfer decision
     media_auto_extract_max_mb: int = 20
     media_max_download_mb: int = 2000
     whisper_model: str = "mlx-community/whisper-large-v3-turbo"
@@ -38,20 +50,20 @@ class Settings(BaseSettings):
     # images: description + OCR through a vision model on OpenRouter
     openrouter_api_key: str = ""
     vision_model: str = "minimax/minimax-m3"
-    media_auto_describe: bool = True          # photos / image files in non-channel chats
+    media_auto_describe: bool = False         # may use an external provider; opt in only
     media_auto_describe_max_mb: int = 5
     vision_pdf_pages: int = 3                 # scanned PDFs: pages rendered and sent to the vision model
 
     # semantic search
     embed_model: str = "intfloat/multilingual-e5-small"   # 384-dim, multilingual, runs locally
-    embed_enabled: bool = True
-    embed_channels: bool = True               # also embed channel posts (more rows, more noise)
+    embed_enabled: bool = False
+    embed_channels: bool = False              # opt in only after resource review
 
     # outbox (sending on behalf of the owner, always confirmed in Saved Messages)
-    send_enabled: bool = True
+    send_enabled: bool = False
     bot_token: str = ""                        # Bot API token: prompts, results and the daily digest come from this bot (with buttons)
-    digest_time: str = "21:00"                 # local time for the daily outbox digest, empty = off
-    health_interval: int = 300                 # seconds between health checks (alerts via the bot on state changes), 0 = off
+    digest_time: str = ""                       # local time for the daily outbox digest, empty = off
+    health_interval: int = 0                   # seconds between health checks (alerts via the bot on state changes), 0 = off
     health_quiet_hours: str = "01:00-08:00"    # no "listener is silent" alerts in this window
     outbox_chat: str = "me"                   # where confirmation prompts go and where "ok/no/stop" replies are read: "me", @username or id
     send_draft_ttl_minutes: int = 10
@@ -63,6 +75,13 @@ class Settings(BaseSettings):
     send_max_attachments: int = 10
 
     log_level: str = "INFO"
+
+    @property
+    def allowed_chat_ids(self) -> frozenset[int]:
+        return parse_chat_ids(self.tg_allowed_chat_ids)
+
+    def is_allowed_chat_id(self, chat_id: int | None) -> bool:
+        return chat_id is not None and chat_id in self.allowed_chat_ids
 
 
 settings = Settings()
